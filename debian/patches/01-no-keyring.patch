@@ -1,0 +1,56 @@
+diff --git a/msrestazure/azure_active_directory.py b/msrestazure/azure_active_directory.py
+index 74618d5..29e2675 100644
+--- a/msrestazure/azure_active_directory.py
++++ b/msrestazure/azure_active_directory.py
+@@ -31,7 +31,13 @@ try:
+ except ImportError:
+     from urllib.parse import urlparse, parse_qs
+ 
+-import keyring
++keyring_available = False
++try:
++    import keyring
++    keyring_available = True
++except ImportError:
++    pass
++
+ from oauthlib.oauth2 import BackendApplicationClient, LegacyApplicationClient
+ from oauthlib.oauth2.rfc6749.errors import (
+     InvalidGrantError,
+@@ -172,7 +178,8 @@ class AADMixin(object):
+         :rtype: None
+         """
+         self.token = token
+-        keyring.set_password(self.cred_store, self.store_key, str(token))
++        if keyring_available:
++            keyring.set_password(self.cred_store, self.store_key, str(token))
+ 
+     def _retrieve_stored_token(self):
+         """Retrieve stored token for new session.
+@@ -181,7 +188,9 @@ class AADMixin(object):
+         :rtype: dict
+         :return: Retrieved token.
+         """
+-        token = keyring.get_password(self.cred_store, self.store_key)
++        token = None
++        if keyring_available:
++            token = keyring.get_password(self.cred_store, self.store_key)
+         if token is None:
+             raise ValueError("No stored token found.")
+         self.token = ast.literal_eval(str(token))
+@@ -210,10 +219,11 @@ class AADMixin(object):
+         :raises: KeyError if failed to clear token.
+         :rtype: None
+         """
+-        try:
+-            keyring.delete_password(self.cred_store, self.store_key)
+-        except keyring.errors.PasswordDeleteError:
+-            raise_with_traceback(KeyError, "Unable to clear token.")
++        if keyring_available:
++            try:
++                keyring.delete_password(self.cred_store, self.store_key)
++            except keyring.errors.PasswordDeleteError:
++                raise_with_traceback(KeyError, "Unable to clear token.")
+ 
+ 
+ class UserPassCredentials(OAuthTokenAuthentication, AADMixin):

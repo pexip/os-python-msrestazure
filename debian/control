@@ -1,0 +1,14 @@
+Source: python-msrestazure
+Section: python
+Priority: optional
+Maintainer: Pexip AS <packaging@pexip.com>
+Build-Depends: debhelper (>= 8.0.0), dh-python,
+ python-all (>= 2.7), python-setuptools
+Standards-Version: 3.9.2
+Homepage: https://github.com/Azure/autorest/tree/master/ClientRuntimes/Python/msrestazure
+
+Package: python-msrestazure
+Architecture: all
+Depends: ${python:Depends} ${misc:Depends}
+Description: AutoRest swagger generator Python client runtime.
+ Azure-specific module.
