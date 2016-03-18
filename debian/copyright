@@ -1,6 +1,6 @@
 Format: http://dep.debian.net/deps/dep5
-Upstream-Name: python-msrest
-Source: https://github.com/Azure/autorest/tree/master/ClientRuntimes/Python/msrest
+Upstream-Name: python-msrestazure
+Source: https://github.com/Azure/autorest/tree/master/ClientRuntimes/Python/msrestazure
 
 Files: *
 Copyright: Microsoft Corporation
