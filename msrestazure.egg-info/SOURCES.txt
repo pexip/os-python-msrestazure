@@ -1,5 +1,6 @@
 MANIFEST.in
-readme.rst
+README.rst
+setup.cfg
 setup.py
 msrestazure/__init__.py
 msrestazure/azure_active_directory.py

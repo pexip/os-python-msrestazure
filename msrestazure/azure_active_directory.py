@@ -25,6 +25,7 @@
 # --------------------------------------------------------------------------
 
 import ast
+import re
 import time
 try:
     from urlparse import urlparse, parse_qs
@@ -32,20 +33,19 @@ except ImportError:
     from urllib.parse import urlparse, parse_qs
 
 import keyring
+import adal
 from oauthlib.oauth2 import BackendApplicationClient, LegacyApplicationClient
 from oauthlib.oauth2.rfc6749.errors import (
     InvalidGrantError,
     MismatchingStateError,
     OAuth2Error,
     TokenExpiredError)
-from requests import RequestException
+from requests import RequestException, ConnectionError
 import requests_oauthlib as oauth
 
-from msrest.authentication import OAuthTokenAuthentication
+from msrest.authentication import OAuthTokenAuthentication, Authentication
 from msrest.exceptions import TokenExpiredError as Expired
-from msrest.exceptions import (
-    AuthenticationError,
-    raise_with_traceback)
+from msrest.exceptions import AuthenticationError, raise_with_traceback
 
 
 def _build_url(uri, paths, scheme):
@@ -92,7 +92,7 @@ def _https(uri, *extra):
     return _build_url(uri, extra, 'https')
 
 
-class AADMixin(object):
+class AADMixin(OAuthTokenAuthentication):
     """Mixin for Authentication object.
     Provides some AAD functionality:
     - State validation
@@ -107,6 +107,7 @@ class AADMixin(object):
     _resource = 'https://management.core.windows.net/'
     _china_resource = "https://management.core.chinacloudapi.cn/"
     _keyring = "AzureAAD"
+    _case = re.compile('([a-z0-9])([A-Z])')
 
     def _configure(self, **kwargs):
         """Configure authentication endpoint.
@@ -153,7 +154,17 @@ class AADMixin(object):
             raise ValueError(
                 "State received from server does not match that of request.")
 
+    def _convert_token(self, token):
+        """Convert token fields from camel case.
+
+        :param dict token: An authentication token.
+        :rtype: dict
+        """
+        return {self._case.sub(r'\1_\2', k).lower(): v
+                for k, v in token.items()}
+
     def _parse_token(self):
+        # TODO: We could also check expires_on and use to update expires_in
         if self.token.get('expires_at'):
             countdown = float(self.token['expires_at']) - time.time()
             self.token['expires_in'] = countdown
@@ -216,7 +227,70 @@ class AADMixin(object):
             raise_with_traceback(KeyError, "Unable to clear token.")
 
 
-class UserPassCredentials(OAuthTokenAuthentication, AADMixin):
+class AADRefreshMixin(object):
+    """
+    Additional token refresh logic
+    """
+
+    def refresh_session(self):
+        """Return updated session if token has expired, attempts to
+        refresh using newly acquired token.
+
+        :rtype: requests.Session.
+        """
+        if self.token.get('refresh_token'):
+            try:
+                return self.signed_session()
+            except Expired:
+                pass
+        self.set_token()
+        return self.signed_session()
+
+
+class AADTokenCredentials(AADMixin):
+    """
+    Credentials objects for AAD token retrieved through external process
+    e.g. Python ADAL lib.
+
+    Optional kwargs may include:
+    - china (bool): Configure auth for China-based service,
+      default is 'False'.
+    - tenant (str): Alternative tenant, default is 'common'.
+    - auth_uri (str): Alternative authentication endpoint.
+    - token_uri (str): Alternative token retrieval endpoint.
+    - resource (str): Alternative authentication resource, default
+      is 'https://management.core.windows.net/'.
+    - verify (bool): Verify secure connection, default is 'True'.
+    - keyring (str): Name of local token cache, default is 'AzureAAD'.
+    - cached (bool): If true, will not attempt to collect a token,
+      which can then be populated later from a cached token.
+
+    :param dict token: Authentication token.
+    :param str client_id: Client ID, if not set, Xplat Client ID
+     will be used.
+    """
+
+    def __init__(self, token, client_id=None, **kwargs):
+        if not client_id:
+            # Default to Xplat Client ID.
+            client_id = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'
+        super(AADTokenCredentials, self).__init__(client_id, None)
+        self._configure(**kwargs)
+        if not kwargs.get('cached'):
+            self.token = self._convert_token(token)
+            self.signed_session()
+
+    @classmethod
+    def retrieve_session(cls, client_id=None):
+        """Create AADTokenCredentials from a cached token if it has not
+        yet expired.
+        """
+        session = cls(None, None, client_id=client_id, cached=True)
+        session._retrieve_stored_token()
+        return session
+
+
+class UserPassCredentials(AADRefreshMixin, AADMixin):
     """Credentials object for Headless Authentication,
     i.e. AAD authentication via username and password.
 
@@ -298,7 +372,7 @@ class UserPassCredentials(OAuthTokenAuthentication, AADMixin):
         self.token = token
 
 
-class ServicePrincipalCredentials(OAuthTokenAuthentication, AADMixin):
+class ServicePrincipalCredentials(AADRefreshMixin, AADMixin):
     """Credentials object for Service Principle Authentication.
     Authenticates via a Client ID and Secret.
 
@@ -361,7 +435,7 @@ class ServicePrincipalCredentials(OAuthTokenAuthentication, AADMixin):
             self.token = token
 
 
-class InteractiveCredentials(OAuthTokenAuthentication, AADMixin):
+class InteractiveCredentials(AADMixin):
     """Credentials object for Interactive/Web App Authentication.
     Requires that an AAD Client be configured with a redirect URL.
 
@@ -416,7 +490,7 @@ class InteractiveCredentials(OAuthTokenAuthentication, AADMixin):
         :param additional_args: Set and additional kwargs for requrired AAD
          configuration: msdn.microsoft.com/en-us/library/azure/dn645542.aspx
         :rtype: Tuple
-        :returns: The URL for authentication (str), and state code that will
+        :return: The URL for authentication (str), and state code that will
          be verified in the response (str).
         """
         if msa:
@@ -450,3 +524,84 @@ class InteractiveCredentials(OAuthTokenAuthentication, AADMixin):
             raise_with_traceback(AuthenticationError, "", err)
         else:
             self.token = token
+
+
+class AdalAuthentication(Authentication):  # pylint: disable=too-few-public-methods
+    """A wrapper to use ADAL for Python easily to authenticate on Azure.
+
+    .. versionadded:: 0.4.5
+    """
+
+    def __init__(self, adal_method, *args, **kwargs):
+        """Take an ADAL `acquire_token` method and its parameters.
+
+        :Example:
+
+        .. code:: python
+
+            context = adal.AuthenticationContext('https://login.microsoftonline.com/ABCDEFGH-1234-1234-1234-ABCDEFGHIJKL')
+            RESOURCE = '00000002-0000-0000-c000-000000000000' #AAD graph resource
+            token = context.acquire_token_with_client_credentials(
+                RESOURCE,
+                "http://PythonSDK",
+                "Key-Configured-In-Portal")
+
+        can be written here:
+
+        .. code:: python
+
+            context = adal.AuthenticationContext('https://login.microsoftonline.com/ABCDEFGH-1234-1234-1234-ABCDEFGHIJKL')
+            RESOURCE = '00000002-0000-0000-c000-000000000000' #AAD graph resource
+            credentials = AdalAuthentication(
+                context.acquire_token_with_client_credentials,
+                RESOURCE,
+                "http://PythonSDK",
+                "Key-Configured-In-Portal")
+
+        or using a lambda if you prefer:
+
+        .. code:: python
+
+            context = adal.AuthenticationContext('https://login.microsoftonline.com/ABCDEFGH-1234-1234-1234-ABCDEFGHIJKL')
+            RESOURCE = '00000002-0000-0000-c000-000000000000' #AAD graph resource
+            credentials = AdalAuthentication(
+                lambda: context.acquire_token_with_client_credentials(
+                    RESOURCE,
+                    "http://PythonSDK",
+                    "Key-Configured-In-Portal"
+                )
+            )
+
+        :param adal_method: A lambda with no args, or `acquire_token` method with args using args/kwargs
+        :param args: Optional args for the method
+        :param kwargs: Optional kwargs for the method
+        """
+        self._adal_method = adal_method
+        self._args = args
+        self._kwargs = kwargs
+
+    def signed_session(self):
+        """Get a signed session for requests.
+
+        Usually called by the Azure SDKs for you to authenticate queries.
+
+        :rtype: requests.Session
+        """
+        session = super(AdalAuthentication, self).signed_session()
+
+        try:
+            raw_token = self._adal_method(*self._args, **self._kwargs)
+        except adal.AdalError as err:
+            # pylint: disable=no-member
+            if (hasattr(err, 'error_response') and ('error_description' in err.error_response)
+                    and ('AADSTS70008:' in err.error_response['error_description'])):
+                raise Expired("Credentials have expired due to inactivity.")
+            else:
+                raise AuthenticationError(err)
+        except ConnectionError as err:
+            raise AuthenticationError('Please ensure you have network connection. Error detail: ' + str(err))
+
+        scheme, token = raw_token['tokenType'], raw_token['accessToken']
+        header = "{} {}".format(scheme, token)
+        session.headers['Authorization'] = header
+        return session
