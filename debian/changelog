@@ -1,3 +1,9 @@
+python-msrestazure (0.4.7-1) pexip; urgency=low
+
+  * New upstream release
+
+ -- John-Mark Bell <jmb@pexip.com>  Tue, 28 Feb 2017 00:56:52 +0000
+
 python-msrestazure (0.1.1-2) pexip; urgency=low
 
   * No-change rebuild

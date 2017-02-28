@@ -1,1 +1,2 @@
-01-no-keyring.patch
+01-no-adal-or-keyring.patch
+02-old-setuptools.patch

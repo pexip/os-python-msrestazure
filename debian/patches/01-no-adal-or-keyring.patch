@@ -1,0 +1,223 @@
+diff --git a/msrestazure/azure_active_directory.py b/msrestazure/azure_active_directory.py
+index a051e33..eb60b69 100644
+--- a/msrestazure/azure_active_directory.py
++++ b/msrestazure/azure_active_directory.py
+@@ -32,8 +32,20 @@ try:
+ except ImportError:
+     from urllib.parse import urlparse, parse_qs
+ 
+-import keyring
+-import adal
++keyring_available = False
++try:
++    import keyring
++    keyring_available = True
++except ImportError:
++    pass
++
++adal_available = False
++try:
++    import adal
++    adal_available = True
++except ImportError:
++    pass
++
+ from oauthlib.oauth2 import BackendApplicationClient, LegacyApplicationClient
+ from oauthlib.oauth2.rfc6749.errors import (
+     InvalidGrantError,
+@@ -183,7 +195,8 @@ class AADMixin(OAuthTokenAuthentication):
+         :rtype: None
+         """
+         self.token = token
+-        keyring.set_password(self.cred_store, self.store_key, str(token))
++        if keyring_available:
++            keyring.set_password(self.cred_store, self.store_key, str(token))
+ 
+     def _retrieve_stored_token(self):
+         """Retrieve stored token for new session.
+@@ -192,7 +205,9 @@ class AADMixin(OAuthTokenAuthentication):
+         :rtype: dict
+         :return: Retrieved token.
+         """
+-        token = keyring.get_password(self.cred_store, self.store_key)
++        token = None
++        if keyring_available:
++            token = keyring.get_password(self.cred_store, self.store_key)
+         if token is None:
+             raise ValueError("No stored token found.")
+         self.token = ast.literal_eval(str(token))
+@@ -221,10 +236,11 @@ class AADMixin(OAuthTokenAuthentication):
+         :raises: KeyError if failed to clear token.
+         :rtype: None
+         """
+-        try:
+-            keyring.delete_password(self.cred_store, self.store_key)
+-        except keyring.errors.PasswordDeleteError:
+-            raise_with_traceback(KeyError, "Unable to clear token.")
++        if keyring_available:
++            try:
++                keyring.delete_password(self.cred_store, self.store_key)
++            except keyring.errors.PasswordDeleteError:
++                raise_with_traceback(KeyError, "Unable to clear token.")
+ 
+ 
+ class AADRefreshMixin(object):
+@@ -525,83 +541,83 @@ class InteractiveCredentials(AADMixin):
+         else:
+             self.token = token
+ 
++if adal_available:
++    class AdalAuthentication(Authentication):  # pylint: disable=too-few-public-methods
++        """A wrapper to use ADAL for Python easily to authenticate on Azure.
+ 
+-class AdalAuthentication(Authentication):  # pylint: disable=too-few-public-methods
+-    """A wrapper to use ADAL for Python easily to authenticate on Azure.
+-
+-    .. versionadded:: 0.4.5
+-    """
++        .. versionadded:: 0.4.5
++        """
+ 
+-    def __init__(self, adal_method, *args, **kwargs):
+-        """Take an ADAL `acquire_token` method and its parameters.
++        def __init__(self, adal_method, *args, **kwargs):
++            """Take an ADAL `acquire_token` method and its parameters.
+ 
+-        :Example:
++            :Example:
+ 
+-        .. code:: python
++            .. code:: python
+ 
+-            context = adal.AuthenticationContext('https://login.microsoftonline.com/ABCDEFGH-1234-1234-1234-ABCDEFGHIJKL')
+-            RESOURCE = '00000002-0000-0000-c000-000000000000' #AAD graph resource
+-            token = context.acquire_token_with_client_credentials(
+-                RESOURCE,
+-                "http://PythonSDK",
+-                "Key-Configured-In-Portal")
++                context = adal.AuthenticationContext('https://login.microsoftonline.com/ABCDEFGH-1234-1234-1234-ABCDEFGHIJKL')
++                RESOURCE = '00000002-0000-0000-c000-000000000000' #AAD graph resource
++                token = context.acquire_token_with_client_credentials(
++                    RESOURCE,
++                    "http://PythonSDK",
++                    "Key-Configured-In-Portal")
+ 
+-        can be written here:
++            can be written here:
+ 
+-        .. code:: python
++            .. code:: python
+ 
+-            context = adal.AuthenticationContext('https://login.microsoftonline.com/ABCDEFGH-1234-1234-1234-ABCDEFGHIJKL')
+-            RESOURCE = '00000002-0000-0000-c000-000000000000' #AAD graph resource
+-            credentials = AdalAuthentication(
+-                context.acquire_token_with_client_credentials,
+-                RESOURCE,
+-                "http://PythonSDK",
+-                "Key-Configured-In-Portal")
++                context = adal.AuthenticationContext('https://login.microsoftonline.com/ABCDEFGH-1234-1234-1234-ABCDEFGHIJKL')
++                RESOURCE = '00000002-0000-0000-c000-000000000000' #AAD graph resource
++                credentials = AdalAuthentication(
++                    context.acquire_token_with_client_credentials,
++                    RESOURCE,
++                    "http://PythonSDK",
++                    "Key-Configured-In-Portal")
+ 
+-        or using a lambda if you prefer:
++            or using a lambda if you prefer:
+ 
+-        .. code:: python
++            .. code:: python
+ 
+-            context = adal.AuthenticationContext('https://login.microsoftonline.com/ABCDEFGH-1234-1234-1234-ABCDEFGHIJKL')
+-            RESOURCE = '00000002-0000-0000-c000-000000000000' #AAD graph resource
+-            credentials = AdalAuthentication(
+-                lambda: context.acquire_token_with_client_credentials(
+-                    RESOURCE,
+-                    "http://PythonSDK",
+-                    "Key-Configured-In-Portal"
++                context = adal.AuthenticationContext('https://login.microsoftonline.com/ABCDEFGH-1234-1234-1234-ABCDEFGHIJKL')
++                RESOURCE = '00000002-0000-0000-c000-000000000000' #AAD graph resource
++                credentials = AdalAuthentication(
++                    lambda: context.acquire_token_with_client_credentials(
++                        RESOURCE,
++                        "http://PythonSDK",
++                        "Key-Configured-In-Portal"
++                    )
+                 )
+-            )
+ 
+-        :param adal_method: A lambda with no args, or `acquire_token` method with args using args/kwargs
+-        :param args: Optional args for the method
+-        :param kwargs: Optional kwargs for the method
+-        """
+-        self._adal_method = adal_method
+-        self._args = args
+-        self._kwargs = kwargs
++            :param adal_method: A lambda with no args, or `acquire_token` method with args using args/kwargs
++            :param args: Optional args for the method
++            :param kwargs: Optional kwargs for the method
++            """
++            self._adal_method = adal_method
++            self._args = args
++            self._kwargs = kwargs
+ 
+-    def signed_session(self):
+-        """Get a signed session for requests.
++        def signed_session(self):
++            """Get a signed session for requests.
+ 
+-        Usually called by the Azure SDKs for you to authenticate queries.
++            Usually called by the Azure SDKs for you to authenticate queries.
+ 
+-        :rtype: requests.Session
+-        """
+-        session = super(AdalAuthentication, self).signed_session()
++            :rtype: requests.Session
++            """
++            session = super(AdalAuthentication, self).signed_session()
+ 
+-        try:
+-            raw_token = self._adal_method(*self._args, **self._kwargs)
+-        except adal.AdalError as err:
+-            # pylint: disable=no-member
+-            if (hasattr(err, 'error_response') and ('error_description' in err.error_response)
+-                    and ('AADSTS70008:' in err.error_response['error_description'])):
+-                raise Expired("Credentials have expired due to inactivity.")
+-            else:
+-                raise AuthenticationError(err)
+-        except ConnectionError as err:
+-            raise AuthenticationError('Please ensure you have network connection. Error detail: ' + str(err))
+-
+-        scheme, token = raw_token['tokenType'], raw_token['accessToken']
+-        header = "{} {}".format(scheme, token)
+-        session.headers['Authorization'] = header
+-        return session
++            try:
++                raw_token = self._adal_method(*self._args, **self._kwargs)
++            except adal.AdalError as err:
++                # pylint: disable=no-member
++                if (hasattr(err, 'error_response') and ('error_description' in err.error_response)
++                        and ('AADSTS70008:' in err.error_response['error_description'])):
++                    raise Expired("Credentials have expired due to inactivity.")
++                else:
++                    raise AuthenticationError(err)
++            except ConnectionError as err:
++                raise AuthenticationError('Please ensure you have network connection. Error detail: ' + str(err))
++
++            scheme, token = raw_token['tokenType'], raw_token['accessToken']
++            header = "{} {}".format(scheme, token)
++            session.headers['Authorization'] = header
++            return session
+diff --git a/setup.py b/setup.py
+index a752e46..9c3b15f 100644
+--- a/setup.py
++++ b/setup.py
+@@ -50,7 +50,5 @@ setup(
+         'Topic :: Software Development'],
+     install_requires=[
+         "msrest~=0.4.4",
+-        "keyring>=5.6",
+-        "adal~=0.4.0"
+     ],
+ )
